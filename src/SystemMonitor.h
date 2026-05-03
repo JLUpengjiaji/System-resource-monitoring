@@ -62,11 +62,16 @@ private:
     QTabWidget* m_tabWidget;
     QStatusBar* m_statusBar;
 
-    QLabel* m_cpuLabel;
-    QLabel* m_memoryLabel;
-    QLabel* m_diskLabel;
-    QLabel* m_networkLabel;
-    QLabel* m_timeLabel;
+    QLabel* m_statusCpuLabel;
+    QLabel* m_statusMemoryLabel;
+    QLabel* m_statusDiskLabel;
+    QLabel* m_statusNetworkLabel;
+    QLabel* m_statusTimeLabel;
+
+    QLabel* m_overviewCpuLabel;
+    QLabel* m_overviewMemoryLabel;
+    QLabel* m_overviewDiskLabel;
+    QLabel* m_overviewNetworkLabel;
 
     TrendChart* m_cpuChart;
     TrendChart* m_memoryChart;

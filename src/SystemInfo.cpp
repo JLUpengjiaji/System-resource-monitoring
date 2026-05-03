@@ -3,41 +3,66 @@
 #include <QFile>
 #include <QDir>
 #include <QThread>
+#include <QDateTime>
+
+#ifdef Q_OS_WIN
+
+#ifndef __IF_TYPE_SOFTWARE_LOOPBACK
+#define IF_TYPE_SOFTWARE_LOOPBACK 24
+#endif
+
+#ifndef __IF_OPER_STATUS_UP
+#define IF_OPER_STATUS_UP 1
+#endif
+
+#endif
 
 SystemInfo::SystemInfo(QObject *parent)
     : QObject(parent)
     , m_firstUpdate(true)
 #ifdef Q_OS_WIN
-    , m_lastIdleTime(0)
-    , m_lastKernelTime(0)
-    , m_lastUserTime(0)
-    , m_lastNetworkUpload(0)
-    , m_lastNetworkDownload(0)
+    , m_prevIdleTime(0)
+    , m_prevKernelTime(0)
+    , m_prevUserTime(0)
+    , m_prevSystemTotal(0)
+    , m_prevNetworkUpload(0)
+    , m_prevNetworkDownload(0)
+    , m_prevNetworkTime(0)
+    , m_processorCount(0)
+    , m_firstCpuUpdate(true)
+    , m_firstNetworkUpdate(true)
 #else
     , m_lastCpuTotal(0)
     , m_lastCpuIdle(0)
 #endif
 {
 #ifdef Q_OS_WIN
-    if (PdhOpenQuery(NULL, 0, &m_cpuQuery) == ERROR_SUCCESS) {
-        PdhAddEnglishCounter(m_cpuQuery, L"\\Processor(_Total)\\% Processor Time", 0, &m_cpuCounter);
-        PdhCollectQueryData(m_cpuQuery);
-    }
+    SYSTEM_INFO sysInfo;
+    GetSystemInfo(&sysInfo);
+    m_processorCount = sysInfo.dwNumberOfProcessors;
 #endif
 }
 
 SystemInfo::~SystemInfo()
 {
-#ifdef Q_OS_WIN
-    if (m_cpuQuery) {
-        PdhCloseQuery(m_cpuQuery);
-    }
-#endif
 }
+
+#ifdef Q_OS_WIN
+quint64 SystemInfo::fileTimeToUInt64(const FILETIME& ft)
+{
+    ULARGE_INTEGER uli;
+    uli.LowPart = ft.dwLowDateTime;
+    uli.HighPart = ft.dwHighDateTime;
+    return uli.QuadPart;
+}
+#endif
 
 SystemData SystemInfo::getSystemData()
 {
+    QMutexLocker locker(&m_dataMutex);
+    
     SystemData data;
+    data.timestamp = QDateTime::currentMSecsSinceEpoch();
 
     data.cpuUsage = getCpuUsage();
 
@@ -51,27 +76,13 @@ SystemData SystemInfo::getSystemData()
     data.diskUsed = disk.second;
     data.diskUsage = data.diskTotal > 0 ? (static_cast<double>(data.diskUsed) / data.diskTotal) * 100.0 : 0.0;
 
-    auto network = getNetworkStats();
-    if (!m_firstUpdate) {
-        data.uploadSpeed = (network.first - m_lastNetworkUpload) / 1024.0;
-        data.downloadSpeed = (network.second - m_lastNetworkDownload) / 1024.0;
-    } else {
-        data.uploadSpeed = 0;
-        data.downloadSpeed = 0;
-    }
-    data.networkUpload = network.first;
-    data.networkDownload = network.second;
-
-#ifdef Q_OS_WIN
-    m_lastNetworkUpload = network.first;
-    m_lastNetworkDownload = network.second;
-#else
-    m_lastCpuTotal = 0;
-    m_lastCpuIdle = 0;
-#endif
-    m_firstUpdate = false;
+    auto networkSpeeds = getNetworkSpeeds();
+    data.uploadSpeed = networkSpeeds.first;
+    data.downloadSpeed = networkSpeeds.second;
 
     data.processes = getProcessList();
+
+    m_firstUpdate = false;
 
     return data;
 }
@@ -79,14 +90,42 @@ SystemData SystemInfo::getSystemData()
 double SystemInfo::getCpuUsage()
 {
 #ifdef Q_OS_WIN
-    if (m_cpuQuery) {
-        PDH_FMT_COUNTERVALUE counterVal;
-        PdhCollectQueryData(m_cpuQuery);
-        if (PdhGetFormattedCounterValue(m_cpuCounter, PDH_FMT_DOUBLE, NULL, &counterVal) == ERROR_SUCCESS) {
-            return counterVal.doubleValue;
-        }
+    FILETIME idleTime, kernelTime, userTime;
+    
+    if (!GetSystemTimes(&idleTime, &kernelTime, &userTime)) {
+        return 0.0;
     }
-    return 0.0;
+
+    quint64 currIdle = fileTimeToUInt64(idleTime);
+    quint64 currKernel = fileTimeToUInt64(kernelTime);
+    quint64 currUser = fileTimeToUInt64(userTime);
+
+    quint64 currSystemTotal = currKernel + currUser;
+
+    if (m_firstCpuUpdate) {
+        m_prevIdleTime = currIdle;
+        m_prevKernelTime = currKernel;
+        m_prevUserTime = currUser;
+        m_prevSystemTotal = currSystemTotal;
+        m_firstCpuUpdate = false;
+        return 0.0;
+    }
+
+    quint64 systemDiff = currSystemTotal - m_prevSystemTotal;
+    quint64 idleDiff = currIdle - m_prevIdleTime;
+
+    if (systemDiff <= 0) {
+        return 0.0;
+    }
+
+    double cpuUsage = 100.0 * (1.0 - static_cast<double>(idleDiff) / static_cast<double>(systemDiff));
+
+    m_prevIdleTime = currIdle;
+    m_prevKernelTime = currKernel;
+    m_prevUserTime = currUser;
+    m_prevSystemTotal = currSystemTotal;
+
+    return qMax(0.0, qMin(100.0, cpuUsage));
 #else
     QFile file("/proc/stat");
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
@@ -114,7 +153,8 @@ double SystemInfo::getCpuUsage()
         m_lastCpuIdle = idle;
 
         if (totalDiff > 0) {
-            return 100.0 * (1.0 - static_cast<double>(idleDiff) / totalDiff);
+            double usage = 100.0 * (1.0 - static_cast<double>(idleDiff) / totalDiff);
+            return qMax(0.0, qMin(100.0, usage));
         }
     }
     return 0.0;
@@ -126,6 +166,7 @@ QPair<quint64, quint64> SystemInfo::getMemoryInfo()
 #ifdef Q_OS_WIN
     MEMORYSTATUSEX memInfo;
     memInfo.dwLength = sizeof(MEMORYSTATUSEX);
+    
     if (GlobalMemoryStatusEx(&memInfo)) {
         quint64 total = memInfo.ullTotalPhys;
         quint64 used = memInfo.ullTotalPhys - memInfo.ullAvailPhys;
@@ -150,6 +191,7 @@ QPair<quint64, quint64> SystemInfo::getDiskInfo()
 {
 #ifdef Q_OS_WIN
     ULARGE_INTEGER freeBytesAvailable, totalNumberOfBytes, totalNumberOfFreeBytes;
+    
     if (GetDiskFreeSpaceExW(L"C:\\", &freeBytesAvailable, &totalNumberOfBytes, &totalNumberOfFreeBytes)) {
         quint64 total = totalNumberOfBytes.QuadPart;
         quint64 used = total - totalNumberOfFreeBytes.QuadPart;
@@ -168,160 +210,139 @@ QPair<quint64, quint64> SystemInfo::getDiskInfo()
 #endif
 }
 
-QPair<quint64, quint64> SystemInfo::getNetworkStats()
+QPair<double, double> SystemInfo::getNetworkSpeeds()
 {
+#ifdef Q_OS_WIN
+    quint64 currUpload = 0;
+    quint64 currDownload = 0;
+
+    MIB_IFTABLE* ifTable = nullptr;
+    DWORD dwSize = 0;
+    DWORD result;
+
+    result = GetIfTable(nullptr, &dwSize, FALSE);
+    if (result != ERROR_INSUFFICIENT_BUFFER) {
+        return qMakePair(0.0, 0.0);
+    }
+
+    ifTable = static_cast<MIB_IFTABLE*>(malloc(dwSize));
+    if (!ifTable) {
+        return qMakePair(0.0, 0.0);
+    }
+
+    result = GetIfTable(ifTable, &dwSize, FALSE);
+    if (result != NO_ERROR) {
+        free(ifTable);
+        return qMakePair(0.0, 0.0);
+    }
+
+    for (DWORD i = 0; i < ifTable->dwNumEntries; i++) {
+        MIB_IFROW& row = ifTable->table[i];
+        
+        if (row.dwType == IF_TYPE_SOFTWARE_LOOPBACK) {
+            continue;
+        }
+        
+        if (row.dwOperStatus != IF_OPER_STATUS_UP) {
+            continue;
+        }
+
+        currUpload += row.dwOutOctets;
+        currDownload += row.dwInOctets;
+    }
+
+    free(ifTable);
+
+    qint64 currTime = QDateTime::currentMSecsSinceEpoch();
+
+    if (m_firstNetworkUpdate) {
+        m_prevNetworkUpload = currUpload;
+        m_prevNetworkDownload = currDownload;
+        m_prevNetworkTime = currTime;
+        m_firstNetworkUpdate = false;
+        return qMakePair(0.0, 0.0);
+    }
+
+    qint64 timeDiff = currTime - m_prevNetworkTime;
+    
+    if (timeDiff <= 0) {
+        return qMakePair(0.0, 0.0);
+    }
+
+    double uploadSpeed = 0.0;
+    double downloadSpeed = 0.0;
+
+    if (currUpload >= m_prevNetworkUpload) {
+        uploadSpeed = static_cast<double>(currUpload - m_prevNetworkUpload) / timeDiff * 1000.0 / 1024.0;
+    }
+
+    if (currDownload >= m_prevNetworkDownload) {
+        downloadSpeed = static_cast<double>(currDownload - m_prevNetworkDownload) / timeDiff * 1000.0 / 1024.0;
+    }
+
+    m_prevNetworkUpload = currUpload;
+    m_prevNetworkDownload = currDownload;
+    m_prevNetworkTime = currTime;
+
+    return qMakePair(qMax(0.0, uploadSpeed), qMax(0.0, downloadSpeed));
+#else
     quint64 totalUpload = 0;
     quint64 totalDownload = 0;
 
-#ifdef Q_OS_WIN
-    MIB_IFTABLE* ifTable;
-    DWORD dwSize = 0;
+    struct ifaddrs* ifAddrStruct = nullptr;
+    struct ifaddrs* ifa = nullptr;
 
-    if (GetIfTable(NULL, &dwSize, FALSE) == ERROR_INSUFFICIENT_BUFFER) {
-        ifTable = (MIB_IFTABLE*)malloc(dwSize);
-        if (ifTable != NULL) {
-            if (GetIfTable(ifTable, &dwSize, FALSE) == NO_ERROR) {
-                for (DWORD i = 0; i < ifTable->dwNumEntries; i++) {
-                    MIB_IFROW& row = ifTable->table[i];
-                    if (row.dwType != IF_TYPE_SOFTWARE_LOOPBACK && 
-                        row.dwOperStatus == IF_OPER_STATUS_UP) {
-                        totalUpload += row.dwOutOctets;
-                        totalDownload += row.dwInOctets;
-                    }
-                }
-            }
-            free(ifTable);
+    if (getifaddrs(&ifAddrStruct) != 0) {
+        return qMakePair(0.0, 0.0);
+    }
+
+    qint64 currTime = QDateTime::currentMSecsSinceEpoch();
+
+    for (ifa = ifAddrStruct; ifa != nullptr; ifa = ifa->ifa_next) {
+        if (!ifa->ifa_addr) {
+            continue;
         }
-    }
-#else
-    struct ifaddrs* ifAddrStruct = NULL;
-    struct ifaddrs* ifa = NULL;
 
-    if (getifaddrs(&ifAddrStruct) == 0) {
-        for (ifa = ifAddrStruct; ifa != NULL; ifa = ifa->ifa_next) {
-            if (ifa->ifa_addr && ifa->ifa_addr->sa_family == AF_PACKET && 
-                strcmp(ifa->ifa_name, "lo") != 0) {
-                struct rtnl_link_stats* stats = (struct rtnl_link_stats*)ifa->ifa_data;
-                if (stats) {
-                    totalUpload += stats->tx_bytes;
-                    totalDownload += stats->rx_bytes;
-                }
-            }
+        if (ifa->ifa_addr->sa_family != AF_PACKET) {
+            continue;
         }
-        freeifaddrs(ifAddrStruct);
-    }
-#endif
 
-    return qMakePair(totalUpload, totalDownload);
-}
+        if (strcmp(ifa->ifa_name, "lo") == 0) {
+            continue;
+        }
 
-double SystemInfo::calculateProcessCpu(qint64 pid)
-{
-#ifdef Q_OS_WIN
-    HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
-    if (hProcess == NULL) {
-        return 0.0;
-    }
-
-    FILETIME creationTime, exitTime, kernelTime, userTime;
-    if (!GetProcessTimes(hProcess, &creationTime, &exitTime, &kernelTime, &userTime)) {
-        CloseHandle(hProcess);
-        return 0.0;
-    }
-
-    ULARGE_INTEGER kernel, user;
-    kernel.LowPart = kernelTime.dwLowDateTime;
-    kernel.HighPart = kernelTime.dwHighDateTime;
-    user.LowPart = userTime.dwLowDateTime;
-    user.HighPart = userTime.dwHighDateTime;
-
-    quint64 totalTime = kernel.QuadPart + user.QuadPart;
-
-    FILETIME idleTime, systemKernelTime, systemUserTime;
-    GetSystemTimes(&idleTime, &systemKernelTime, &systemUserTime);
-
-    ULARGE_INTEGER sysIdle, sysKernel, sysUser;
-    sysIdle.LowPart = idleTime.dwLowDateTime;
-    sysIdle.HighPart = idleTime.dwHighDateTime;
-    sysKernel.LowPart = systemKernelTime.dwLowDateTime;
-    sysKernel.HighPart = systemKernelTime.dwHighDateTime;
-    sysUser.LowPart = systemUserTime.dwLowDateTime;
-    sysUser.HighPart = systemUserTime.dwHighDateTime;
-
-    quint64 systemTotal = sysKernel.QuadPart + sysUser.QuadPart - sysIdle.QuadPart;
-
-    double cpuUsage = 0.0;
-    if (m_processTimes.contains(pid)) {
-        auto& prev = m_processTimes[pid];
-        quint64 processDiff = totalTime - prev.first;
-        quint64 systemDiff = systemTotal - prev.second;
-
-        if (systemDiff > 0) {
-            SYSTEM_INFO sysInfo;
-            GetSystemInfo(&sysInfo);
-            cpuUsage = (static_cast<double>(processDiff) / systemDiff) * 100.0 * sysInfo.dwNumberOfProcessors;
+        struct rtnl_link_stats* stats = static_cast<struct rtnl_link_stats*>(ifa->ifa_data);
+        if (stats) {
+            totalUpload += stats->tx_bytes;
+            totalDownload += stats->rx_bytes;
         }
     }
 
-    m_processTimes[pid] = qMakePair(totalTime, systemTotal);
-    CloseHandle(hProcess);
+    freeifaddrs(ifAddrStruct);
 
-    return qMin(cpuUsage, 100.0);
-#else
-    QString procPath = QString("/proc/%1/stat").arg(pid);
-    QFile file(procPath);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        return 0.0;
+    QString totalKey = "total";
+    if (!m_interfaceStats.contains(totalKey)) {
+        m_interfaceStats[totalKey] = qMakePair(totalUpload, totalDownload);
+        return qMakePair(0.0, 0.0);
     }
 
-    QString line = file.readLine();
-    file.close();
+    auto& prev = m_interfaceStats[totalKey];
+    qint64 timeDiff = 1000;
 
-    QStringList parts = line.split(QRegExp("\\s+"), Qt::SkipEmptyParts);
-    if (parts.size() < 22) {
-        return 0.0;
+    double uploadSpeed = 0.0;
+    double downloadSpeed = 0.0;
+
+    if (totalUpload >= prev.first) {
+        uploadSpeed = static_cast<double>(totalUpload - prev.first) / timeDiff * 1000.0 / 1024.0;
     }
 
-    unsigned long utime = parts[13].toULong();
-    unsigned long stime = parts[14].toULong();
-    unsigned long cutime = parts[15].toULong();
-    unsigned long cstime = parts[16].toULong();
-
-    unsigned long total = utime + stime + cutime + cstime;
-
-    double cpuUsage = 0.0;
-    if (m_processTimes.contains(pid)) {
-        auto& prev = m_processTimes[pid];
-        unsigned long processDiff = total - prev.first;
-        unsigned long totalDiff = 0;
-
-        QFile statFile("/proc/stat");
-        if (statFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
-            QString statLine = statFile.readLine();
-            statFile.close();
-
-            QStringList statParts = statLine.split(QRegExp("\\s+"), Qt::SkipEmptyParts);
-            if (statParts.size() >= 8) {
-                unsigned long user = statParts[1].toULong();
-                unsigned long nice = statParts[2].toULong();
-                unsigned long system = statParts[3].toULong();
-                unsigned long idle = statParts[4].toULong();
-                unsigned long iowait = statParts[5].toULong();
-                unsigned long irq = statParts[6].toULong();
-                unsigned long softirq = statParts[7].toULong();
-
-                unsigned long currentTotal = user + nice + system + idle + iowait + irq + softirq;
-                totalDiff = currentTotal - prev.second;
-            }
-        }
-
-        if (totalDiff > 0) {
-            cpuUsage = (static_cast<double>(processDiff) / totalDiff) * 100.0;
-        }
+    if (totalDownload >= prev.second) {
+        downloadSpeed = static_cast<double>(totalDownload - prev.second) / timeDiff * 1000.0 / 1024.0;
     }
 
-    m_processTimes[pid] = qMakePair(total, 0UL);
-    return qMin(cpuUsage, 100.0);
+    m_interfaceStats[totalKey] = qMakePair(totalUpload, totalDownload);
+
+    return qMakePair(qMax(0.0, uploadSpeed), qMax(0.0, downloadSpeed));
 #endif
 }
 
@@ -335,24 +356,40 @@ QVector<ProcessInfo> SystemInfo::getProcessList()
         return processes;
     }
 
-    PROCESSENTRY32 pe32;
-    pe32.dwSize = sizeof(PROCESSENTRY32);
+    PROCESSENTRY32W pe32;
+    pe32.dwSize = sizeof(PROCESSENTRY32W);
 
-    if (Process32First(hSnapshot, &pe32)) {
+    QMap<qint64, PROCESS_TIME_INFO> currProcessTimes;
+
+    if (Process32FirstW(hSnapshot, &pe32)) {
         do {
             ProcessInfo info;
             info.name = QString::fromWCharArray(pe32.szExeFile);
             info.pid = pe32.th32ProcessID;
+            info.cpuUsage = 0.0;
+            info.memoryUsage = 0;
 
             HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, info.pid);
-            if (hProcess != NULL) {
+            if (hProcess != nullptr) {
                 PROCESS_MEMORY_COUNTERS_EX pmc;
-                if (GetProcessMemoryInfo(hProcess, (PROCESS_MEMORY_COUNTERS*)&pmc, sizeof(pmc))) {
+                if (GetProcessMemoryInfo(hProcess, reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc), sizeof(pmc))) {
                     info.memoryUsage = pmc.WorkingSetSize;
                 }
 
                 FILETIME creationTime, exitTime, kernelTime, userTime;
                 if (GetProcessTimes(hProcess, &creationTime, &exitTime, &kernelTime, &userTime)) {
+                    quint64 kTime = fileTimeToUInt64(kernelTime);
+                    quint64 uTime = fileTimeToUInt64(userTime);
+                    quint64 tTime = kTime + uTime;
+
+                    PROCESS_TIME_INFO timeInfo;
+                    timeInfo.kernelTime = kTime;
+                    timeInfo.userTime = uTime;
+                    timeInfo.totalTime = tTime;
+                    currProcessTimes[info.pid] = timeInfo;
+
+                    info.cpuUsage = calculateProcessCpu(info.pid, kTime, uTime);
+
                     ULARGE_INTEGER createTime;
                     createTime.LowPart = creationTime.dwLowDateTime;
                     createTime.HighPart = creationTime.dwHighDateTime;
@@ -365,13 +402,18 @@ QVector<ProcessInfo> SystemInfo::getProcessList()
                 CloseHandle(hProcess);
             }
 
-            info.cpuUsage = calculateProcessCpu(info.pid);
+            if (info.name.isEmpty()) {
+                info.name = tr("[System Process]");
+            }
+
             processes.append(info);
 
-        } while (Process32Next(hSnapshot, &pe32));
+        } while (Process32NextW(hSnapshot, &pe32));
     }
 
     CloseHandle(hSnapshot);
+
+    m_prevProcessTimes = currProcessTimes;
 #else
     proc_t** procList = readproctab(PROC_FILLSTAT | PROC_FILLSTATUS | PROC_FILLMEM);
     if (!procList) {
@@ -383,14 +425,17 @@ QVector<ProcessInfo> SystemInfo::getProcessList()
 
         ProcessInfo info;
         info.name = QString(p->cmd);
+        if (info.name.isEmpty()) {
+            info.name = tr("[Unknown]");
+        }
         info.pid = p->tid;
         info.memoryUsage = static_cast<quint64>(p->rss) * sysconf(_SC_PAGESIZE);
         
         if (p->start_time != 0) {
-            info.startTime = QDateTime::currentDateTime().addSecs(-(time(NULL) - p->start_time / sysconf(_SC_CLK_TCK)));
+            info.startTime = QDateTime::currentDateTime().addSecs(-(time(nullptr) - p->start_time / sysconf(_SC_CLK_TCK)));
         }
 
-        info.cpuUsage = calculateProcessCpu(info.pid);
+        info.cpuUsage = 0.0;
         processes.append(info);
     }
 
@@ -398,4 +443,42 @@ QVector<ProcessInfo> SystemInfo::getProcessList()
 #endif
 
     return processes;
+}
+
+double SystemInfo::calculateProcessCpu(qint64 pid, quint64 kernelTime, quint64 userTime)
+{
+#ifdef Q_OS_WIN
+    if (!m_prevProcessTimes.contains(pid)) {
+        return 0.0;
+    }
+
+    PROCESS_TIME_INFO prevInfo = m_prevProcessTimes[pid];
+    quint64 prevTotal = prevInfo.totalTime;
+    quint64 currTotal = kernelTime + userTime;
+
+    FILETIME idleTime, kernelTimeSys, userTimeSys;
+    if (!GetSystemTimes(&idleTime, &kernelTimeSys, &userTimeSys)) {
+        return 0.0;
+    }
+
+    quint64 currIdle = fileTimeToUInt64(idleTime);
+    quint64 currKernel = fileTimeToUInt64(kernelTimeSys);
+    quint64 currUser = fileTimeToUInt64(userTimeSys);
+    quint64 currSystemTotal = currKernel + currUser;
+
+    quint64 processDiff = currTotal - prevTotal;
+    quint64 systemDiff = currSystemTotal - m_prevSystemTotal;
+
+    if (systemDiff <= 0) {
+        return 0.0;
+    }
+
+    double cpuUsage = (static_cast<double>(processDiff) / systemDiff) * 100.0;
+
+    cpuUsage = qMax(0.0, qMin(100.0 * m_processorCount, cpuUsage));
+
+    return cpuUsage;
+#else
+    return 0.0;
+#endif
 }

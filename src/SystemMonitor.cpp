@@ -81,27 +81,27 @@ void SystemMonitor::setupStatusBar()
     m_statusBar = statusBar();
     m_statusBar->setSizeGripEnabled(true);
 
-    m_cpuLabel = new QLabel(tr("CPU: 0%"), this);
-    m_cpuLabel->setMinimumWidth(100);
+    m_statusCpuLabel = new QLabel(tr("CPU: 0%"), this);
+    m_statusCpuLabel->setMinimumWidth(100);
 
-    m_memoryLabel = new QLabel(tr("Memory: 0%"), this);
-    m_memoryLabel->setMinimumWidth(120);
+    m_statusMemoryLabel = new QLabel(tr("Memory: 0%"), this);
+    m_statusMemoryLabel->setMinimumWidth(120);
 
-    m_diskLabel = new QLabel(tr("Disk: 0%"), this);
-    m_diskLabel->setMinimumWidth(120);
+    m_statusDiskLabel = new QLabel(tr("Disk: 0%"), this);
+    m_statusDiskLabel->setMinimumWidth(120);
 
-    m_networkLabel = new QLabel(tr("Net: ↑0 KB/s ↓0 KB/s"), this);
-    m_networkLabel->setMinimumWidth(180);
+    m_statusNetworkLabel = new QLabel(tr("Net: ↑0 KB/s ↓0 KB/s"), this);
+    m_statusNetworkLabel->setMinimumWidth(180);
 
-    m_timeLabel = new QLabel(tr("Last update: --:--:--"), this);
-    m_timeLabel->setMinimumWidth(150);
-    m_timeLabel->setAlignment(Qt::AlignRight);
+    m_statusTimeLabel = new QLabel(tr("Last update: --:--:--"), this);
+    m_statusTimeLabel->setMinimumWidth(150);
+    m_statusTimeLabel->setAlignment(Qt::AlignRight);
 
-    m_statusBar->addWidget(m_cpuLabel);
-    m_statusBar->addWidget(m_memoryLabel);
-    m_statusBar->addWidget(m_diskLabel);
-    m_statusBar->addWidget(m_networkLabel);
-    m_statusBar->addPermanentWidget(m_timeLabel);
+    m_statusBar->addWidget(m_statusCpuLabel);
+    m_statusBar->addWidget(m_statusMemoryLabel);
+    m_statusBar->addWidget(m_statusDiskLabel);
+    m_statusBar->addWidget(m_statusNetworkLabel);
+    m_statusBar->addPermanentWidget(m_statusTimeLabel);
 }
 
 void SystemMonitor::createOverviewTab()
@@ -122,38 +122,38 @@ void SystemMonitor::createOverviewTab()
 
     QLabel* cpuTitleLabel = new QLabel(tr("CPU Usage:"), this);
     cpuTitleLabel->setFont(labelFont);
-    m_cpuLabel = new QLabel(tr("0.0%"), this);
-    m_cpuLabel->setFont(labelFont);
-    m_cpuLabel->setAlignment(Qt::AlignRight);
-    m_cpuLabel->setMinimumWidth(80);
+    m_overviewCpuLabel = new QLabel(tr("0.0%"), this);
+    m_overviewCpuLabel->setFont(labelFont);
+    m_overviewCpuLabel->setAlignment(Qt::AlignRight);
+    m_overviewCpuLabel->setMinimumWidth(80);
     summaryLayout->addWidget(cpuTitleLabel, 0, 0);
-    summaryLayout->addWidget(m_cpuLabel, 0, 1);
+    summaryLayout->addWidget(m_overviewCpuLabel, 0, 1);
 
     QLabel* memoryTitleLabel = new QLabel(tr("Memory Usage:"), this);
     memoryTitleLabel->setFont(labelFont);
-    m_memoryLabel = new QLabel(tr("0.0%"), this);
-    m_memoryLabel->setFont(labelFont);
-    m_memoryLabel->setAlignment(Qt::AlignRight);
-    m_memoryLabel->setMinimumWidth(80);
+    m_overviewMemoryLabel = new QLabel(tr("0.0%"), this);
+    m_overviewMemoryLabel->setFont(labelFont);
+    m_overviewMemoryLabel->setAlignment(Qt::AlignRight);
+    m_overviewMemoryLabel->setMinimumWidth(80);
     summaryLayout->addWidget(memoryTitleLabel, 0, 2);
-    summaryLayout->addWidget(m_memoryLabel, 0, 3);
+    summaryLayout->addWidget(m_overviewMemoryLabel, 0, 3);
 
     QLabel* diskTitleLabel = new QLabel(tr("Disk Usage:"), this);
     diskTitleLabel->setFont(labelFont);
-    m_diskLabel = new QLabel(tr("0.0%"), this);
-    m_diskLabel->setFont(labelFont);
-    m_diskLabel->setAlignment(Qt::AlignRight);
-    m_diskLabel->setMinimumWidth(80);
+    m_overviewDiskLabel = new QLabel(tr("0.0%"), this);
+    m_overviewDiskLabel->setFont(labelFont);
+    m_overviewDiskLabel->setAlignment(Qt::AlignRight);
+    m_overviewDiskLabel->setMinimumWidth(80);
     summaryLayout->addWidget(diskTitleLabel, 1, 0);
-    summaryLayout->addWidget(m_diskLabel, 1, 1);
+    summaryLayout->addWidget(m_overviewDiskLabel, 1, 1);
 
     QLabel* networkTitleLabel = new QLabel(tr("Network Speed:"), this);
     networkTitleLabel->setFont(labelFont);
-    m_networkLabel = new QLabel(tr("↑ 0 KB/s  ↓ 0 KB/s"), this);
-    m_networkLabel->setFont(labelFont);
-    m_networkLabel->setAlignment(Qt::AlignRight);
+    m_overviewNetworkLabel = new QLabel(tr("↑ 0 KB/s  ↓ 0 KB/s"), this);
+    m_overviewNetworkLabel->setFont(labelFont);
+    m_overviewNetworkLabel->setAlignment(Qt::AlignRight);
     summaryLayout->addWidget(networkTitleLabel, 1, 2);
-    summaryLayout->addWidget(m_networkLabel, 1, 3);
+    summaryLayout->addWidget(m_overviewNetworkLabel, 1, 3);
 
     overviewLayout->addWidget(summaryGroup);
 
@@ -220,39 +220,51 @@ void SystemMonitor::onRefreshData()
 
 void SystemMonitor::updateStatusBar()
 {
-    QString cpuText = QString(tr("CPU: %1%")).arg(m_currentData.cpuUsage, 0, 'f', 1);
-    m_cpuLabel->setText(cpuText);
-
-    QString memoryText = QString(tr("Memory: %1%")).arg(m_currentData.memoryUsage, 0, 'f', 1);
-    m_memoryLabel->setText(memoryText);
-
-    QString diskText = QString(tr("Disk: %1%")).arg(m_currentData.diskUsage, 0, 'f', 1);
-    m_diskLabel->setText(diskText);
-
+    QString cpuValue = QString("%1%").arg(m_currentData.cpuUsage, 0, 'f', 1);
+    QString memoryValue = QString("%1%").arg(m_currentData.memoryUsage, 0, 'f', 1);
+    QString diskValue = QString("%1%").arg(m_currentData.diskUsage, 0, 'f', 1);
     QString networkText = QString(tr("↑ %1  ↓ %2"))
         .arg(formatBytes(static_cast<quint64>(m_currentData.uploadSpeed * 1024)) + "/s")
         .arg(formatBytes(static_cast<quint64>(m_currentData.downloadSpeed * 1024)) + "/s");
-    m_networkLabel->setText(networkText);
+
+    QString statusCpuText = QString(tr("CPU: %1")).arg(cpuValue);
+    QString statusMemoryText = QString(tr("Memory: %1")).arg(memoryValue);
+    QString statusDiskText = QString(tr("Disk: %1")).arg(diskValue);
+
+    m_statusCpuLabel->setText(statusCpuText);
+    m_statusMemoryLabel->setText(statusMemoryText);
+    m_statusDiskLabel->setText(statusDiskText);
+    m_statusNetworkLabel->setText(networkText);
+
+    m_overviewCpuLabel->setText(cpuValue);
+    m_overviewMemoryLabel->setText(memoryValue);
+    m_overviewDiskLabel->setText(diskValue);
+    m_overviewNetworkLabel->setText(networkText);
+
+    QString cpuStyle = "";
+    QString memoryStyle = "";
 
     if (m_currentData.cpuUsage > 50.0) {
-        m_cpuLabel->setStyleSheet("color: orange; font-weight: bold;");
+        cpuStyle = "color: orange; font-weight: bold;";
     } else if (m_currentData.cpuUsage > 80.0) {
-        m_cpuLabel->setStyleSheet("color: red; font-weight: bold;");
-    } else {
-        m_cpuLabel->setStyleSheet("");
+        cpuStyle = "color: red; font-weight: bold;";
     }
 
     if (m_currentData.memoryUsage > 70.0) {
-        m_memoryLabel->setStyleSheet("color: orange; font-weight: bold;");
+        memoryStyle = "color: orange; font-weight: bold;";
     } else if (m_currentData.memoryUsage > 85.0) {
-        m_memoryLabel->setStyleSheet("color: red; font-weight: bold;");
-    } else {
-        m_memoryLabel->setStyleSheet("");
+        memoryStyle = "color: red; font-weight: bold;";
     }
+
+    m_statusCpuLabel->setStyleSheet(cpuStyle);
+    m_overviewCpuLabel->setStyleSheet(cpuStyle);
+
+    m_statusMemoryLabel->setStyleSheet(memoryStyle);
+    m_overviewMemoryLabel->setStyleSheet(memoryStyle);
 
     QString timeText = tr("Last update: %1")
         .arg(QDateTime::currentDateTime().toString("HH:mm:ss"));
-    m_timeLabel->setText(timeText);
+    m_statusTimeLabel->setText(timeText);
 }
 
 QString SystemMonitor::formatBytes(quint64 bytes)
