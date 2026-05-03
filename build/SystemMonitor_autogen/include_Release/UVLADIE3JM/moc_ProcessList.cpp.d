@@ -1,6 +1,8 @@
 D:/repoList/System-resource-monitoring-1/build/SystemMonitor_autogen/include_Release/UVLADIE3JM/moc_ProcessList.cpp: D:/repoList/System-resource-monitoring-1/src/ProcessList.h \
   C:/Qt/5.15.2/msvc2019_64/include/QtCore/QDateTime \
+  C:/Qt/5.15.2/msvc2019_64/include/QtCore/QElapsedTimer \
   C:/Qt/5.15.2/msvc2019_64/include/QtCore/QMap \
+  C:/Qt/5.15.2/msvc2019_64/include/QtCore/QMutex \
   C:/Qt/5.15.2/msvc2019_64/include/QtCore/QObject \
   C:/Qt/5.15.2/msvc2019_64/include/QtCore/QPair \
   C:/Qt/5.15.2/msvc2019_64/include/QtCore/QString \
@@ -21,6 +23,7 @@ D:/repoList/System-resource-monitoring-1/build/SystemMonitor_autogen/include_Rel
   C:/Qt/5.15.2/msvc2019_64/include/QtCore/qcontainertools_impl.h \
   C:/Qt/5.15.2/msvc2019_64/include/QtCore/qdatastream.h \
   C:/Qt/5.15.2/msvc2019_64/include/QtCore/qdatetime.h \
+  C:/Qt/5.15.2/msvc2019_64/include/QtCore/qelapsedtimer.h \
   C:/Qt/5.15.2/msvc2019_64/include/QtCore/qflags.h \
   C:/Qt/5.15.2/msvc2019_64/include/QtCore/qglobal.h \
   C:/Qt/5.15.2/msvc2019_64/include/QtCore/qglobalstatic.h \

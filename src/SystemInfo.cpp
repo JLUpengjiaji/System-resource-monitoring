@@ -4,6 +4,7 @@
 #include <QDir>
 #include <QThread>
 #include <QDateTime>
+#include <limits>
 
 #ifdef Q_OS_WIN
 
@@ -216,42 +217,34 @@ QPair<double, double> SystemInfo::getNetworkSpeeds()
     quint64 currUpload = 0;
     quint64 currDownload = 0;
 
-    MIB_IFTABLE* ifTable = nullptr;
-    DWORD dwSize = 0;
-    DWORD result;
+    PMIB_IF_TABLE2 pIfTable = nullptr;
+    NETIO_STATUS status;
 
-    result = GetIfTable(nullptr, &dwSize, FALSE);
-    if (result != ERROR_INSUFFICIENT_BUFFER) {
+    status = GetIfTable2(&pIfTable);
+    if (status != NO_ERROR || pIfTable == nullptr) {
         return qMakePair(0.0, 0.0);
     }
 
-    ifTable = static_cast<MIB_IFTABLE*>(malloc(dwSize));
-    if (!ifTable) {
-        return qMakePair(0.0, 0.0);
-    }
-
-    result = GetIfTable(ifTable, &dwSize, FALSE);
-    if (result != NO_ERROR) {
-        free(ifTable);
-        return qMakePair(0.0, 0.0);
-    }
-
-    for (DWORD i = 0; i < ifTable->dwNumEntries; i++) {
-        MIB_IFROW& row = ifTable->table[i];
+    for (ULONG i = 0; i < pIfTable->NumEntries; i++) {
+        MIB_IF_ROW2& row = pIfTable->Table[i];
         
-        if (row.dwType == IF_TYPE_SOFTWARE_LOOPBACK) {
+        if (row.Type == IF_TYPE_SOFTWARE_LOOPBACK) {
             continue;
         }
         
-        if (row.dwOperStatus != IF_OPER_STATUS_UP) {
+        if (row.OperStatus != IfOperStatusUp) {
             continue;
         }
 
-        currUpload += row.dwOutOctets;
-        currDownload += row.dwInOctets;
+        if (row.InOctets == 0 && row.OutOctets == 0) {
+            continue;
+        }
+
+        currUpload += row.OutOctets;
+        currDownload += row.InOctets;
     }
 
-    free(ifTable);
+    FreeMibTable(pIfTable);
 
     qint64 currTime = QDateTime::currentMSecsSinceEpoch();
 
@@ -272,12 +265,20 @@ QPair<double, double> SystemInfo::getNetworkSpeeds()
     double uploadSpeed = 0.0;
     double downloadSpeed = 0.0;
 
+    const quint64 COUNTER_THRESHOLD = 1000000000000ULL;
+
     if (currUpload >= m_prevNetworkUpload) {
         uploadSpeed = static_cast<double>(currUpload - m_prevNetworkUpload) / timeDiff * 1000.0 / 1024.0;
+    } else if (m_prevNetworkUpload - currUpload > COUNTER_THRESHOLD) {
+        quint64 wrapAround = (std::numeric_limits<quint64>::max)() - m_prevNetworkUpload + currUpload + 1;
+        uploadSpeed = static_cast<double>(wrapAround) / timeDiff * 1000.0 / 1024.0;
     }
 
     if (currDownload >= m_prevNetworkDownload) {
         downloadSpeed = static_cast<double>(currDownload - m_prevNetworkDownload) / timeDiff * 1000.0 / 1024.0;
+    } else if (m_prevNetworkDownload - currDownload > COUNTER_THRESHOLD) {
+        quint64 wrapAround = (std::numeric_limits<quint64>::max)() - m_prevNetworkDownload + currDownload + 1;
+        downloadSpeed = static_cast<double>(wrapAround) / timeDiff * 1000.0 / 1024.0;
     }
 
     m_prevNetworkUpload = currUpload;
