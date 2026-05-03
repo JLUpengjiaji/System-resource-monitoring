@@ -1,0 +1,3 @@
+D:/repoList/System-resource-monitoring-1/build/CMakeFiles/SystemMonitor.dir
+D:/repoList/System-resource-monitoring-1/build/CMakeFiles/ALL_BUILD.dir
+D:/repoList/System-resource-monitoring-1/build/CMakeFiles/ZERO_CHECK.dir
