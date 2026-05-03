@@ -8,6 +8,17 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
+if(WIN32)
+    add_compile_definitions(UNICODE _UNICODE)
+endif()
+
+if(MSVC)
+    add_compile_options(/utf-8)
+    add_compile_options(/W3)
+else()
+    add_compile_options(-Wall -Wextra)
+endif()
+
 find_package(Qt5 REQUIRED COMPONENTS Core Widgets)
 
 set(SOURCES

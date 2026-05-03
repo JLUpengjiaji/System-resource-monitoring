@@ -9,14 +9,25 @@
 #include <QDateTime>
 
 #ifdef Q_OS_WIN
+#ifndef UNICODE
+#define UNICODE
+#endif
+#ifndef _UNICODE
+#define _UNICODE
+#endif
 #include <windows.h>
 #include <pdh.h>
 #include <pdhmsg.h>
 #include <psapi.h>
 #include <iphlpapi.h>
+#include <tlhelp32.h>
 #pragma comment(lib, "pdh.lib")
 #pragma comment(lib, "psapi.lib")
 #pragma comment(lib, "iphlpapi.lib")
+
+#ifndef IF_OPER_STATUS_UP
+#define IF_OPER_STATUS_UP 1
+#endif
 #else
 #include <sys/sysinfo.h>
 #include <sys/statvfs.h>

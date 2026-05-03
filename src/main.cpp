@@ -2,16 +2,17 @@
 #include <QStyleFactory>
 #include <QPalette>
 #include <QDebug>
+#include <QObject>
 #include "SystemMonitor.h"
 
 int main(int argc, char *argv[])
 {
     QApplication app(argc, argv);
 
-    app.setApplicationName(tr("System Resource Monitor"));
-    app.setApplicationVersion(tr("1.0.0"));
-    app.setOrganizationName(tr("OpenSource"));
-    app.setOrganizationDomain(tr("opensource.org"));
+    app.setApplicationName(QObject::tr("System Resource Monitor"));
+    app.setApplicationVersion(QObject::tr("1.0.0"));
+    app.setOrganizationName(QObject::tr("OpenSource"));
+    app.setOrganizationDomain(QObject::tr("opensource.org"));
 
     QApplication::setStyle(QStyleFactory::create("Fusion"));
 
