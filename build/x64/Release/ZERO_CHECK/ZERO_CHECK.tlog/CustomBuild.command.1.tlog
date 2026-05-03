@@ -1,0 +1,10 @@
+^D:\REPOLIST\SYSTEM-RESOURCE-MONITORING-1\BUILD\CMAKEFILES\16A57D3542A6583D1014073712F5EBAD\GENERATE.STAMP.RULE
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SD:/repoList/System-resource-monitoring-1 -BD:/repoList/System-resource-monitoring-1/build --check-stamp-list CMakeFiles/generate.stamp.list --vs-solution-file D:/repoList/System-resource-monitoring-1/build/SystemMonitor.sln
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
