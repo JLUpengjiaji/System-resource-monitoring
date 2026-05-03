@@ -21,7 +21,6 @@
 #include <psapi.h>
 #include <iphlpapi.h>
 #include <tlhelp32.h>
-#include <netioapi.h>
 #pragma comment(lib, "psapi.lib")
 #pragma comment(lib, "iphlpapi.lib")
 
@@ -31,14 +30,6 @@
 
 #ifndef IF_TYPE_SOFTWARE_LOOPBACK
 #define IF_TYPE_SOFTWARE_LOOPBACK 24
-#endif
-
-#ifndef IF_TYPE_ETHERNET_CSMACD
-#define IF_TYPE_ETHERNET_CSMACD 6
-#endif
-
-#ifndef IF_TYPE_IEEE80211
-#define IF_TYPE_IEEE80211 71
 #endif
 
 typedef struct _PROCESS_TIME_INFO {
