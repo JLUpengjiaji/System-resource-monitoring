@@ -25,12 +25,10 @@ SystemInfo::SystemInfo(QObject *parent)
     , m_prevKernelTime(0)
     , m_prevUserTime(0)
     , m_prevSystemTotal(0)
-    , m_prevNetworkUpload(0)
-    , m_prevNetworkDownload(0)
-    , m_prevNetworkTime(0)
     , m_processorCount(0)
     , m_firstCpuUpdate(true)
     , m_firstNetworkUpdate(true)
+    , m_pdhQuery(nullptr)
 #else
     , m_lastCpuTotal(0)
     , m_lastCpuIdle(0)
@@ -40,11 +38,16 @@ SystemInfo::SystemInfo(QObject *parent)
     SYSTEM_INFO sysInfo;
     GetSystemInfo(&sysInfo);
     m_processorCount = sysInfo.dwNumberOfProcessors;
+    
+    initializeNetworkCounters();
 #endif
 }
 
 SystemInfo::~SystemInfo()
 {
+#ifdef Q_OS_WIN
+    cleanupNetworkCounters();
+#endif
 }
 
 #ifdef Q_OS_WIN
@@ -54,6 +57,170 @@ quint64 SystemInfo::fileTimeToUInt64(const FILETIME& ft)
     uli.LowPart = ft.dwLowDateTime;
     uli.HighPart = ft.dwHighDateTime;
     return uli.QuadPart;
+}
+
+QVector<QString> SystemInfo::getActiveNetworkInterfaces()
+{
+    QVector<QString> interfaces;
+    
+    HKEY hKey;
+    LONG lResult = RegOpenKeyExW(HKEY_LOCAL_MACHINE, 
+        L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\NetworkCards",
+        0, KEY_READ, &hKey);
+    
+    if (lResult != ERROR_SUCCESS) {
+        return interfaces;
+    }
+    
+    DWORD dwIndex = 0;
+    WCHAR szSubKeyName[256];
+    DWORD dwSubKeyNameSize = 256;
+    
+    while (RegEnumKeyExW(hKey, dwIndex, szSubKeyName, &dwSubKeyNameSize, 
+        nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS) {
+        
+        HKEY hSubKey;
+        WCHAR szKeyPath[512];
+        swprintf_s(szKeyPath, L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\NetworkCards\\%s", szSubKeyName);
+        
+        if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, szKeyPath, 0, KEY_READ, &hSubKey) == ERROR_SUCCESS) {
+            WCHAR szServiceName[256];
+            DWORD dwServiceNameSize = sizeof(szServiceName);
+            DWORD dwType;
+            
+            if (RegQueryValueExW(hSubKey, L"ServiceName", nullptr, &dwType, 
+                (LPBYTE)szServiceName, &dwServiceNameSize) == ERROR_SUCCESS) {
+                if (wcslen(szServiceName) > 0) {
+                    QString ifName = QString::fromWCharArray(szServiceName);
+                    if (!ifName.contains("Tunneling", Qt::CaseInsensitive) &&
+                        !ifName.contains("Loopback", Qt::CaseInsensitive)) {
+                        interfaces.append(ifName);
+                    }
+                }
+            }
+            RegCloseKey(hSubKey);
+        }
+        
+        dwSubKeyNameSize = 256;
+        dwIndex++;
+    }
+    
+    RegCloseKey(hKey);
+    
+    if (interfaces.isEmpty()) {
+        MIB_IFTABLE* ifTable = nullptr;
+        DWORD dwSize = 0;
+        
+        if (GetIfTable(nullptr, &dwSize, FALSE) == ERROR_INSUFFICIENT_BUFFER) {
+            ifTable = static_cast<MIB_IFTABLE*>(malloc(dwSize));
+            if (ifTable && GetIfTable(ifTable, &dwSize, FALSE) == NO_ERROR) {
+                for (DWORD i = 0; i < ifTable->dwNumEntries; i++) {
+                    MIB_IFROW& row = ifTable->table[i];
+                    
+                    if (row.dwType == IF_TYPE_SOFTWARE_LOOPBACK) {
+                        continue;
+                    }
+                    
+                    if (row.dwOperStatus != IF_OPER_STATUS_UP) {
+                        continue;
+                    }
+                    
+                    if (row.dwInOctets == 0 && row.dwOutOctets == 0) {
+                        continue;
+                    }
+                    
+                    char szName[256];
+                    WideCharToMultiByte(CP_ACP, 0, (LPCWCH)row.wszName, -1, 
+                        szName, sizeof(szName), nullptr, nullptr);
+                    
+                    QString ifName = QString::fromLocal8Bit(szName);
+                    if (!ifName.isEmpty()) {
+                        interfaces.append(ifName);
+                    }
+                }
+            }
+            if (ifTable) {
+                free(ifTable);
+            }
+        }
+    }
+    
+    return interfaces;
+}
+
+bool SystemInfo::initializeNetworkCounters()
+{
+    PDH_STATUS pdhStatus;
+    
+    pdhStatus = PdhOpenQueryW(nullptr, 0, &m_pdhQuery);
+    if (pdhStatus != ERROR_SUCCESS) {
+        qDebug() << "PdhOpenQuery failed:" << pdhStatus;
+        m_pdhQuery = nullptr;
+        return false;
+    }
+    
+    QVector<QString> interfaces = getActiveNetworkInterfaces();
+    
+    for (const QString& ifName : interfaces) {
+        NETWORK_COUNTER_INFO counterInfo;
+        counterInfo.interfaceName = ifName;
+        
+        QString uploadCounterPath = QString("\\Network Interface(%1)\\Bytes Sent/sec").arg(ifName);
+        QString downloadCounterPath = QString("\\Network Interface(%1)\\Bytes Received/sec").arg(ifName);
+        
+        PDH_STATUS status1 = PdhAddEnglishCounterW(m_pdhQuery, 
+            uploadCounterPath.toStdWString().c_str(), 0, &counterInfo.hCounterUpload);
+        
+        PDH_STATUS status2 = PdhAddEnglishCounterW(m_pdhQuery, 
+            downloadCounterPath.toStdWString().c_str(), 0, &counterInfo.hCounterDownload);
+        
+        if (status1 == ERROR_SUCCESS && status2 == ERROR_SUCCESS) {
+            m_networkCounters.append(counterInfo);
+            qDebug() << "Added network counters for interface:" << ifName;
+        }
+    }
+    
+    if (m_networkCounters.isEmpty()) {
+        NETWORK_COUNTER_INFO counterInfo;
+        counterInfo.interfaceName = "*";
+        
+        PDH_STATUS status1 = PdhAddEnglishCounterW(m_pdhQuery, 
+            L"\\Network Interface(*)\\Bytes Sent/sec", 0, &counterInfo.hCounterUpload);
+        
+        PDH_STATUS status2 = PdhAddEnglishCounterW(m_pdhQuery, 
+            L"\\Network Interface(*)\\Bytes Received/sec", 0, &counterInfo.hCounterDownload);
+        
+        if (status1 == ERROR_SUCCESS && status2 == ERROR_SUCCESS) {
+            m_networkCounters.append(counterInfo);
+            qDebug() << "Added wildcard network counters";
+        }
+    }
+    
+    if (!m_networkCounters.isEmpty()) {
+        pdhStatus = PdhCollectQueryData(m_pdhQuery);
+        if (pdhStatus != ERROR_SUCCESS) {
+            qDebug() << "Initial PdhCollectQueryData failed:" << pdhStatus;
+        }
+    }
+    
+    return !m_networkCounters.isEmpty();
+}
+
+void SystemInfo::cleanupNetworkCounters()
+{
+    if (m_pdhQuery) {
+        for (auto& counter : m_networkCounters) {
+            if (counter.hCounterUpload) {
+                PdhRemoveCounter(counter.hCounterUpload);
+            }
+            if (counter.hCounterDownload) {
+                PdhRemoveCounter(counter.hCounterDownload);
+            }
+        }
+        PdhCloseQuery(m_pdhQuery);
+        m_pdhQuery = nullptr;
+        m_networkCounters.clear();
+    }
 }
 #endif
 
@@ -213,90 +380,53 @@ QPair<quint64, quint64> SystemInfo::getDiskInfo()
 QPair<double, double> SystemInfo::getNetworkSpeeds()
 {
 #ifdef Q_OS_WIN
-    quint64 currUpload = 0;
-    quint64 currDownload = 0;
-
-    MIB_IFTABLE* ifTable = nullptr;
-    DWORD dwSize = 0;
-    DWORD result;
-
-    result = GetIfTable(nullptr, &dwSize, FALSE);
-    if (result != ERROR_INSUFFICIENT_BUFFER) {
+    double totalUploadSpeed = 0.0;
+    double totalDownloadSpeed = 0.0;
+    
+    if (!m_pdhQuery || m_networkCounters.isEmpty()) {
+        if (m_firstNetworkUpdate) {
+            m_firstNetworkUpdate = false;
+        }
         return qMakePair(0.0, 0.0);
     }
-
-    ifTable = static_cast<MIB_IFTABLE*>(malloc(dwSize));
-    if (!ifTable) {
+    
+    PDH_STATUS pdhStatus = PdhCollectQueryData(m_pdhQuery);
+    if (pdhStatus != ERROR_SUCCESS) {
+        qDebug() << "PdhCollectQueryData failed:" << pdhStatus;
+        if (m_firstNetworkUpdate) {
+            m_firstNetworkUpdate = false;
+        }
         return qMakePair(0.0, 0.0);
     }
-
-    result = GetIfTable(ifTable, &dwSize, FALSE);
-    if (result != NO_ERROR) {
-        free(ifTable);
-        return qMakePair(0.0, 0.0);
-    }
-
-    for (DWORD i = 0; i < ifTable->dwNumEntries; i++) {
-        MIB_IFROW& row = ifTable->table[i];
+    
+    for (const auto& counter : m_networkCounters) {
+        PDH_FMT_COUNTERVALUE uploadValue;
+        PDH_FMT_COUNTERVALUE downloadValue;
         
-        if (row.dwType == IF_TYPE_SOFTWARE_LOOPBACK) {
-            continue;
+        pdhStatus = PdhGetFormattedCounterValue(counter.hCounterUpload, 
+            PDH_FMT_DOUBLE, nullptr, &uploadValue);
+        
+        if (pdhStatus == ERROR_SUCCESS && uploadValue.CStatus == ERROR_SUCCESS) {
+            totalUploadSpeed += uploadValue.doubleValue;
         }
         
-        if (row.dwOperStatus != IF_OPER_STATUS_UP) {
-            continue;
+        pdhStatus = PdhGetFormattedCounterValue(counter.hCounterDownload, 
+            PDH_FMT_DOUBLE, nullptr, &downloadValue);
+        
+        if (pdhStatus == ERROR_SUCCESS && downloadValue.CStatus == ERROR_SUCCESS) {
+            totalDownloadSpeed += downloadValue.doubleValue;
         }
-
-        if (row.dwInOctets == 0 && row.dwOutOctets == 0) {
-            continue;
-        }
-
-        currUpload += row.dwOutOctets;
-        currDownload += row.dwInOctets;
     }
-
-    free(ifTable);
-
-    qint64 currTime = QDateTime::currentMSecsSinceEpoch();
-
+    
     if (m_firstNetworkUpdate) {
-        m_prevNetworkUpload = currUpload;
-        m_prevNetworkDownload = currDownload;
-        m_prevNetworkTime = currTime;
         m_firstNetworkUpdate = false;
         return qMakePair(0.0, 0.0);
     }
-
-    qint64 timeDiff = currTime - m_prevNetworkTime;
     
-    if (timeDiff <= 0) {
-        return qMakePair(0.0, 0.0);
-    }
-
-    double uploadSpeed = 0.0;
-    double downloadSpeed = 0.0;
-
-    const quint64 DWORD_MAX_VALUE = 0xFFFFFFFFULL;
-
-    if (currUpload >= m_prevNetworkUpload) {
-        uploadSpeed = static_cast<double>(currUpload - m_prevNetworkUpload) / timeDiff * 1000.0 / 1024.0;
-    } else if (m_prevNetworkUpload - currUpload > DWORD_MAX_VALUE / 2) {
-        quint64 wrapAround = DWORD_MAX_VALUE - m_prevNetworkUpload + currUpload + 1;
-        uploadSpeed = static_cast<double>(wrapAround) / timeDiff * 1000.0 / 1024.0;
-    }
-
-    if (currDownload >= m_prevNetworkDownload) {
-        downloadSpeed = static_cast<double>(currDownload - m_prevNetworkDownload) / timeDiff * 1000.0 / 1024.0;
-    } else if (m_prevNetworkDownload - currDownload > DWORD_MAX_VALUE / 2) {
-        quint64 wrapAround = DWORD_MAX_VALUE - m_prevNetworkDownload + currDownload + 1;
-        downloadSpeed = static_cast<double>(wrapAround) / timeDiff * 1000.0 / 1024.0;
-    }
-
-    m_prevNetworkUpload = currUpload;
-    m_prevNetworkDownload = currDownload;
-    m_prevNetworkTime = currTime;
-
-    return qMakePair(qMax(0.0, uploadSpeed), qMax(0.0, downloadSpeed));
+    double uploadSpeedKB = totalUploadSpeed / 1024.0;
+    double downloadSpeedKB = totalDownloadSpeed / 1024.0;
+    
+    return qMakePair(qMax(0.0, uploadSpeedKB), qMax(0.0, downloadSpeedKB));
 #else
     quint64 totalUpload = 0;
     quint64 totalDownload = 0;

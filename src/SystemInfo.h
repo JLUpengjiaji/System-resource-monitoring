@@ -19,24 +19,23 @@
 #endif
 #include <windows.h>
 #include <psapi.h>
-#include <iphlpapi.h>
+#include <pdh.h>
+#include <pdhmsg.h>
 #include <tlhelp32.h>
 #pragma comment(lib, "psapi.lib")
-#pragma comment(lib, "iphlpapi.lib")
-
-#ifndef IF_OPER_STATUS_UP
-#define IF_OPER_STATUS_UP 1
-#endif
-
-#ifndef IF_TYPE_SOFTWARE_LOOPBACK
-#define IF_TYPE_SOFTWARE_LOOPBACK 24
-#endif
+#pragma comment(lib, "pdh.lib")
 
 typedef struct _PROCESS_TIME_INFO {
     quint64 kernelTime;
     quint64 userTime;
     quint64 totalTime;
 } PROCESS_TIME_INFO;
+
+typedef struct _NETWORK_COUNTER_INFO {
+    HCOUNTER hCounterUpload;
+    HCOUNTER hCounterDownload;
+    QString interfaceName;
+} NETWORK_COUNTER_INFO;
 
 #else
 #include <sys/sysinfo.h>
@@ -93,21 +92,22 @@ private:
 
 #ifdef Q_OS_WIN
     quint64 fileTimeToUInt64(const FILETIME& ft);
+    bool initializeNetworkCounters();
+    void cleanupNetworkCounters();
+    QVector<QString> getActiveNetworkInterfaces();
     
     quint64 m_prevIdleTime;
     quint64 m_prevKernelTime;
     quint64 m_prevUserTime;
     quint64 m_prevSystemTotal;
     
-    quint64 m_prevNetworkUpload;
-    quint64 m_prevNetworkDownload;
-    qint64 m_prevNetworkTime;
-    
     QMap<qint64, PROCESS_TIME_INFO> m_prevProcessTimes;
     int m_processorCount;
     
     bool m_firstCpuUpdate;
     bool m_firstNetworkUpdate;
+    HQUERY m_pdhQuery;
+    QVector<NETWORK_COUNTER_INFO> m_networkCounters;
 #else
     long m_lastCpuTotal;
     long m_lastCpuIdle;
